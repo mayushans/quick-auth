@@ -1,0 +1,52 @@
+{
+    "//_comment": "访问控制与白名单合并配置文件。规则在 /auth 端点（auth_request）校验，Nginx 通过 X-Original-URI 传递原始路径。",
+    "//_whitelist": "邮箱白名单：每项包含 email 和可选的 groups 数组。留空或不配置则表示不限制登录。",
+    "//_access_rules": "路由访问规则（在 /auth 端点校验）：未匹配的路径默认为公开。path 支持精确匹配和通配符 *，可选的 host/port 限制域名和端口，requireGroups 指定允许的用户组。",
+    "whitelist": [
+        {
+            "email": "allowed@example.com",
+            "groups": [
+                "user"
+            ]
+        }
+    ],
+    "access_rules": [
+        {
+            "path": "/",
+            "requireAuth": true
+        },
+        {
+            "path": "/api/me",
+            "requireAuth": true
+        },
+        {
+            "path": "/admin/*",
+            "requireAuth": true,
+            "requireGroups": [
+                "admin"
+            ]
+        },
+        {
+            "path": "/editor/*",
+            "requireAuth": true,
+            "requireGroups": [
+                "editor"
+            ]
+        },
+        {
+            "path": "/api/*",
+            "requireAuth": true,
+            "host": "api.example.com",
+            "port": 8080
+        },
+        {
+            "path": "/dashboard",
+            "requireAuth": true,
+            "host": "app.example.com",
+            "requireGroups": [
+                "admin",
+                "editor"
+            ]
+        }
+    ]
+}

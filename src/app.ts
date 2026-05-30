@@ -72,19 +72,40 @@ function sessionCookieOptions(c: Parameters<typeof isHttps>[0]) {
   }
 }
 
-// ── 白名单（从独立文件动态加载，支持运行时热重载） ──
-// 格式：每行一个邮箱 [组1,组2,...]
-// 例如：
-//   admin@example.com  admin
-//   user@example.com   user,editor
-//   313652730@qq.com
-const whitelistPath = join(__dirname, '..', 'whitelist.txt')
+// ── 访问控制配置（从 access-control.json 加载，支持运行时热重载） ──
+// 合并了原 whitelist.txt 与 Nginx 访问控制规则
+// 文件格式见 access-control.json 示例
 
 interface WhitelistEntry {
   groups: string[]
 }
 
-function parseWhitelist(content: string): Map<string, WhitelistEntry> {
+interface AccessRule {
+  path: string
+  host?: string          // 限制域名，如 "admin.example.com"；不配置则匹配所有
+  port?: number          // 限制端口，如 8080；不配置则匹配所有
+  requireAuth: boolean
+  requireGroups?: string[]   // 允许访问的用户组，不配置则不限
+}
+
+interface AccessControlConfig {
+  whitelist: Array<{ email: string; groups?: string[] }>
+  access_rules: Array<{
+    path: string
+    host?: string
+    port?: number
+    requireAuth?: boolean
+    requireGroups?: string[]
+  }>
+}
+
+const configPath = join(__dirname, '..', 'access-control.json')
+const legacyWhitelistPath = join(__dirname, '..', 'whitelist.txt')
+
+let whitelist: Map<string, WhitelistEntry> = new Map()
+let accessRules: AccessRule[] = []
+
+function parseWhitelistFromLegacy(content: string): Map<string, WhitelistEntry> {
   const map = new Map<string, WhitelistEntry>()
   for (const line of content.split('\n')) {
     const trimmed = line.trim()
@@ -99,28 +120,55 @@ function parseWhitelist(content: string): Map<string, WhitelistEntry> {
   return map
 }
 
-let whitelist: Map<string, WhitelistEntry>
-
-function loadWhitelist(): Map<string, WhitelistEntry> {
+function loadAccessControl(): void {
   try {
-    return parseWhitelist(readFileSync(whitelistPath, 'utf-8'))
+    const raw = readFileSync(configPath, 'utf-8')
+    const parsed = JSON.parse(raw) as AccessControlConfig
+    const newWhitelist = new Map<string, WhitelistEntry>()
+    for (const entry of (parsed.whitelist ?? [])) {
+      newWhitelist.set(entry.email.toLowerCase(), { groups: entry.groups ?? [] })
+    }
+    whitelist = newWhitelist
+    accessRules = (parsed.access_rules ?? []).map(r => ({
+      path: r.path,
+      host: r.host || undefined,
+      port: r.port || undefined,
+      requireAuth: r.requireAuth ?? false,
+      requireGroups: r.requireGroups,
+    }))
+    console.log(`[CONFIG] 已加载：${whitelist.size} 条白名单，${accessRules.length} 条访问规则`)
   } catch {
-    return new Map()
+    // 回退到旧版 whitelist.txt
+    try {
+      whitelist = parseWhitelistFromLegacy(readFileSync(legacyWhitelistPath, 'utf-8'))
+      accessRules = []
+      console.log(`[CONFIG] 已从 whitelist.txt 加载 ${whitelist.size} 条规则（兼容模式）`)
+    } catch {
+      whitelist = new Map()
+      accessRules = []
+    }
   }
 }
 
-whitelist = loadWhitelist()
+loadAccessControl()
 
-// 监听文件变化，自动热重载
+// 监听配置文件变化，自动热重载
 try {
-  const watcher = statSync(whitelistPath)
-  watchFile(whitelistPath, { interval: 1000 }, () => {
-    const newList = loadWhitelist()
-    whitelist = newList
-    console.log(`[WHITELIST] 已重新加载，共 ${whitelist.size} 条规则`)
+  statSync(configPath)
+  watchFile(configPath, { interval: 1000 }, () => {
+    loadAccessControl()
+    console.log(`[CONFIG] 配置文件已重新加载`)
   })
 } catch {
-  // whitelist.txt 不存在时不启动监听
+  // access-control.json 不存在，尝试监听旧版 whitelist.txt
+  try {
+    statSync(legacyWhitelistPath)
+    watchFile(legacyWhitelistPath, { interval: 1000 }, () => {
+      loadAccessControl()
+    })
+  } catch {
+    // 两个文件都不存在，不启动监听
+  }
 }
 
 function isAllowed(email: string): boolean {
@@ -163,6 +211,64 @@ async function sendEmail(to: string, subject: string, html: string, text: string
 const app = new Hono()
 
 app.use('/api/*', cors({ origin: '*', credentials: true }))
+
+// ── 访问规则匹配工具函数（供 /auth 端点使用） ──
+
+/**
+ * 解析请求的 host 和 port（从 Host 请求头提取）
+ */
+function parseRequestHost(hostHeader: string): { host: string; port?: number } {
+  const colonIdx = hostHeader.lastIndexOf(':')
+  if (colonIdx > 0) {
+    const port = Number(hostHeader.slice(colonIdx + 1))
+    if (!Number.isNaN(port)) {
+      return { host: hostHeader.slice(0, colonIdx), port }
+    }
+  }
+  return { host: hostHeader }
+}
+
+/**
+ * 检查请求是否匹配一条访问规则（路径 + 域名 + 端口）
+ */
+function matchRule(
+  requestPath: string,
+  requestHost: string,
+  requestPort: number | undefined,
+  rule: AccessRule,
+): boolean {
+  // 1. 域名匹配（如果规则指定了 host）
+  if (rule.host && rule.host !== requestHost) return false
+  // 2. 端口匹配（如果规则指定了 port）
+  if (rule.port !== undefined && rule.port !== requestPort) return false
+  // 3. 路径匹配
+  if (rule.path.endsWith('/*')) {
+    const prefix = rule.path.slice(0, -2)
+    if (requestPath === prefix) return true
+    return requestPath.startsWith(prefix + '/')
+  }
+  return rule.path === requestPath
+}
+
+/**
+ * 根据访问规则校验当前请求的权限
+ * @returns 'ok' | 'unauthorized' | 'forbidden'
+ */
+function checkAccessRule(
+  requestPath: string,
+  requestHost: string,
+  requestPort: number | undefined,
+  sessionGroups: string[],
+): 'ok' | 'unauthorized' | 'forbidden' {
+  const rule = accessRules.find(r => matchRule(requestPath, requestHost, requestPort, r))
+  // 没有匹配规则 → 允许
+  if (!rule || !rule.requireAuth) return 'ok'
+  // 规则要求特定用户组
+  if (rule.requireGroups && rule.requireGroups.length > 0) {
+    return rule.requireGroups.some(g => sessionGroups.includes(g)) ? 'ok' : 'forbidden'
+  }
+  return 'ok'
+}
 
 // ────────── 1. 发送验证码 ──────────
 
@@ -295,7 +401,9 @@ app.post('/api/logout', async (c) => {
   return c.json({ success: true })
 })
 
-// ────────── 5. Nginx auth_request 验证端点 ──────────
+// ────────── 5. Nginx auth_request 校验端点 ──────────
+// Nginx 通过 auth_request 调用此端点，根据 access-control.json 中的规则
+// 返回 200（允许访问）、401（未登录）或 403（权限不足）。
 
 app.get('/auth', async (c) => {
   const sessionId = getCookie(c, 'quickAuth')
@@ -312,6 +420,18 @@ app.get('/auth', async (c) => {
 
   // 滑动过期
   cache.expire(`session:${sessionId}`, Number(SESSION_TTL))
+
+  // ── 访问控制校验 ──
+  // Nginx 通过 X-Original-URI 传递原始请求路径
+  const originalUri = c.req.header('x-original-uri') || c.req.path
+  const hostHeader = c.req.header('host') || ''
+  const { host: requestHost, port: requestPort } = parseRequestHost(hostHeader)
+
+  const accessResult = checkAccessRule(originalUri, requestHost, requestPort, session.groups)
+  if (accessResult === 'forbidden') {
+    c.status(403)
+    return c.body('Forbidden')
+  }
 
   c.header('X-User-Email', session.email)
   c.header('X-User-Groups', session.groups.join(','))
