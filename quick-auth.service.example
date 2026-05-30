@@ -1,16 +1,4 @@
 # ── Quick Auth — systemd 服务配置 ──
-# 安装方法：
-#   1. 将本文件复制到 /etc/systemd/system/quick-auth.service
-#   2. 修改 WorkingDirectory、User、Group 等路径为实际值
-#   3. 执行以下命令：
-#      sudo systemctl daemon-reload
-#      sudo systemctl enable quick-auth
-#      sudo systemctl start quick-auth
-#   4. 查看状态：
-#      sudo systemctl status quick-auth
-#   5. 查看日志：
-#      sudo journalctl -u quick-auth -f
-
 [Unit]
 Description=Quick Auth - Email verification based authentication service
 After=network.target
@@ -23,31 +11,19 @@ Type=exec
 WorkingDirectory=/opt/quick-auth
 
 # ── 运行用户和组 ──
-User=node
-Group=node
+User=www-data
+Group=www-data
 
 # ── 启动命令（使用 tsx 直接运行 TypeScript） ──
-ExecStart=/usr/bin/node /usr/bin/tsx /opt/quick-auth/src/index.ts
+ExecStart=/usr/bin/node /opt/quick-auth/dist/index.js
 
 # ── 重启策略 ──
 Restart=always
 RestartSec=5
 
 # ── 环境变量（也可通过项目根目录的 .env 文件加载） ──
-Environment=NODE_ENV=production
-Environment=PORT=3000
-
-# ── 日志 ──
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=quick-auth
-
-# ── 安全与资源限制 ──
-NoNewPrivileges=true
-ProtectHome=true
-ProtectSystem=full
-PrivateTmp=true
-LimitNOFILE=65536
+# Environment=NODE_ENV=production
+# Environment=PORT=3000
 
 [Install]
 WantedBy=multi-user.target

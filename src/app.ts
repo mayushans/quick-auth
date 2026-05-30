@@ -151,15 +151,8 @@ function loadAccessControl(): void {
     }))
     debugLog(`[CONFIG] 已加载：${whitelist.size} 条白名单，${accessRules.length} 条访问规则`)
   } catch {
-    // 回退到旧版 whitelist.txt
-    try {
-      whitelist = parseWhitelistFromLegacy(readFileSync(legacyWhitelistPath, 'utf-8'))
-      accessRules = []
-      debugLog(`[CONFIG] 已从 whitelist.txt 加载 ${whitelist.size} 条规则（兼容模式）`)
-    } catch {
-      whitelist = new Map()
-      accessRules = []
-    }
+    whitelist = new Map()
+    accessRules = []
   }
 }
 
@@ -173,15 +166,7 @@ try {
     debugLog(`[CONFIG] 配置文件已重新加载`)
   })
 } catch {
-  // access-control.json 不存在，尝试监听旧版 whitelist.txt
-  try {
-    statSync(legacyWhitelistPath)
-    watchFile(legacyWhitelistPath, { interval: 1000 }, () => {
-      loadAccessControl()
-    })
-  } catch {
-    // 两个文件都不存在，不启动监听
-  }
+  // 文件不存在，不启动监听
 }
 
 function isAllowed(email: string): boolean {
@@ -197,10 +182,10 @@ function getUserGroups(email: string): string[] {
 
 const transporter = SMTP_HOST && SMTP_USER
   ? nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: Number(SMTP_PORT),
-      auth: { user: SMTP_USER, pass: SMTP_PASS },
-    })
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT),
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
+  })
   : null
 
 async function sendEmail(to: string, subject: string, html: string, text: string): Promise<boolean> {
