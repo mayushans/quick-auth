@@ -424,7 +424,8 @@ app.get('/auth', async (c) => {
   // ── 访问控制校验 ──
   // Nginx 通过 X-Original-URI 传递原始请求路径
   const originalUri = c.req.header('x-original-uri') || c.req.path
-  const hostHeader = c.req.header('host') || ''
+  // 优先使用 X-Forwarded-Host（Nginx 反向代理时携带），其次使用 Host 头
+  const hostHeader = c.req.header('x-forwarded-host') || c.req.header('host') || ''
   const { host: requestHost, port: requestPort } = parseRequestHost(hostHeader)
 
   const accessResult = checkAccessRule(originalUri, requestHost, requestPort, session.groups)
