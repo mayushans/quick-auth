@@ -73,24 +73,39 @@ function sessionCookieOptions(c: Parameters<typeof isHttps>[0]) {
 }
 
 // ── 白名单（从独立文件动态加载，支持运行时热重载） ──
+// 格式：每行一个邮箱 [组1,组2,...]
+// 例如：
+//   admin@example.com  admin
+//   user@example.com   user,editor
+//   313652730@qq.com
 const whitelistPath = join(__dirname, '..', 'whitelist.txt')
 
-function parseWhitelist(content: string): Set<string> {
-  return new Set(
-    content
-      .split('\n')
-      .map(s => s.trim().toLowerCase())
-      .filter(s => s.length > 0 && !s.startsWith('#')),
-  )
+interface WhitelistEntry {
+  groups: string[]
 }
 
-let whitelist: Set<string>
+function parseWhitelist(content: string): Map<string, WhitelistEntry> {
+  const map = new Map<string, WhitelistEntry>()
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const parts = trimmed.split(/\s+/)
+    const email = parts[0].toLowerCase()
+    const groups = parts.length > 1
+      ? parts[1].split(',').map(g => g.trim()).filter(Boolean)
+      : []
+    map.set(email, { groups })
+  }
+  return map
+}
 
-function loadWhitelist(): Set<string> {
+let whitelist: Map<string, WhitelistEntry>
+
+function loadWhitelist(): Map<string, WhitelistEntry> {
   try {
     return parseWhitelist(readFileSync(whitelistPath, 'utf-8'))
   } catch {
-    return new Set()
+    return new Map()
   }
 }
 
@@ -110,6 +125,11 @@ try {
 
 function isAllowed(email: string): boolean {
   return whitelist.size === 0 || whitelist.has(email)
+}
+
+function getUserGroups(email: string): string[] {
+  const entry = whitelist.get(email)
+  return entry ? entry.groups : []
 }
 
 // ──────────────────────────── 邮件发送器 ────────────────────────────
@@ -229,7 +249,8 @@ app.post('/api/verify-code', async (c) => {
 
   const sessionId = crypto.randomUUID()
   const sessionTtl = Number(SESSION_TTL)
-  cache.set(`session:${sessionId}`, { email: normalizedEmail, createdAt: Date.now() }, sessionTtl)
+  const groups = getUserGroups(normalizedEmail)
+  cache.set(`session:${sessionId}`, { email: normalizedEmail, groups, createdAt: Date.now() }, sessionTtl)
 
   setCookie(c, 'quickAuth', sessionId, sessionCookieOptions(c))
 
@@ -251,13 +272,13 @@ app.get('/api/me', async (c) => {
   const sessionId = getCookie(c, 'quickAuth')
   if (!sessionId) return c.json({ error: '未登录' }, 401)
 
-  const session = cache.get<{ email: string; createdAt: number } | null>(`session:${sessionId}`)
+  const session = cache.get<{ email: string; groups: string[]; createdAt: number } | null>(`session:${sessionId}`)
   if (!session) return c.json({ error: '会话已过期' }, 401)
 
   // 滑动过期：每次访问刷新 TTL
   cache.expire(`session:${sessionId}`, Number(SESSION_TTL))
 
-  return c.json({ email: session.email, createdAt: session.createdAt })
+  return c.json({ email: session.email, groups: session.groups, createdAt: session.createdAt })
 })
 
 // ────────── 4. 登出 ──────────
@@ -283,7 +304,7 @@ app.get('/auth', async (c) => {
     return c.body('Unauthorized')
   }
 
-  const session = cache.get<{ email: string } | null>(`session:${sessionId}`)
+  const session = cache.get<{ email: string; groups: string[] } | null>(`session:${sessionId}`)
   if (!session) {
     c.status(401)
     return c.body('Unauthorized')
@@ -293,6 +314,8 @@ app.get('/auth', async (c) => {
   cache.expire(`session:${sessionId}`, Number(SESSION_TTL))
 
   c.header('X-User-Email', session.email)
+  c.header('X-User-Groups', session.groups.join(','))
+
   return c.body('OK')
 })
 

@@ -8,10 +8,8 @@
 |------|----------|
 | `auth-server.conf` | 部署 Quick Auth 认证服务本身的 Nginx（域名如 `auth.example.com`） |
 | `app-server.conf` | 受保护的业务服务，通过 `auth_request` 委托鉴权（域名如 `app.example.com`） |
-| `access-control.conf` | 基于邮箱的访问控制，限制只有特定邮箱才能访问某些路径,在 http 块引入 |
 | `snippets/auth-location.conf` | 在 server 块中引用，反向代理鉴权端点 |
 | `snippets/auth-use.conf`| 在 location 处引用，对当前访问路径鉴权，验证用户是否已登录 |
-| `snippets/auth-acl-email.conf`| 受保护的路径中加入访问控制，限制 access-control.conf 中配置的邮箱 |
 
 ## 架构流程
 
@@ -26,6 +24,21 @@ Nginx auth_request ──→ auth.example.com/auth ──→ 401
         │
         ▼
 用户完成验证码登录 → JS 跳转回原始地址
+
+已登录用户访问受保护路径：
+
+用户请求 /private/
+        │
+        ▼
+auth_request /_auth_check ──→ 后端 /auth
+        │                           │
+        │                    ← X-User-Email      (邮箱)
+        │                    ← X-User-Groups     (组名，如 "admin")
+        ▼
+auth_request_set 捕获两个变量
+        │
+        ├─ $user_groups !~ admin → 403（不满足组要求）
+        └─ 通过 → proxy_pass 并传递 X-User-Email / X-User-Groups
 ```
 
 ## 跨域 Cookie 要求
