@@ -1,0 +1,6 @@
+# 邮箱白名单配置文件
+# 每行一个邮箱地址，# 开头的行为注释
+# 文件不存在或为空时不限制登录
+
+admin@example.com
+user@example.com
